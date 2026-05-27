@@ -1,0 +1,78 @@
+/* --- GLOBAL SCROLLBAR ARCHITECTURE --- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 10px; }
+
+/* ==========================================================================
+   THEME STYLING MATRIX ARCHITECTURE
+   ========================================================================== */
+
+/* --- 1. LIGHT SYSTEM MOCK --- */
+.theme-light {
+    --bg-main: #f8fafc;
+    --card-bg: #ffffff;
+    --text-color: #0f172a;
+    --border-color: rgba(15, 23, 42, 0.08);
+    background-color: var(--bg-main);
+    color: var(--text-color);
+}
+.theme-light .card, .theme-light nav { background-color: var(--card-bg); border-color: var(--border-color); }
+
+/* --- 2. DARK SYSTEM MOCK --- */
+.theme-dark {
+    --bg-main: #0b0f19;
+    --card-bg: #151f32;
+    --text-color: #f1f5f9;
+    --border-color: rgba(241, 245, 249, 0.08);
+    background-color: var(--bg-main);
+    color: var(--text-color);
+}
+.theme-dark .card, .theme-dark nav { background-color: var(--card-bg); border-color: var(--border-color); }
+.theme-dark input, .theme-dark textarea, .theme-dark select { border-color: rgba(241, 245, 249, 0.2); color: #fff; }
+.theme-dark select option { background: #151f32; color: #fff; }
+
+/* --- 3. PINK AESTHETIC --- */
+.theme-pink {
+    --bg-main: #fff0f5;
+    --card-bg: #fffafb;
+    --text-color: #4c1130;
+    --border-color: rgba(76, 17, 48, 0.1);
+    background-color: var(--bg-main);
+    color: var(--text-color);
+}
+.theme-pink .card, .theme-pink nav { background-color: var(--card-bg); border-color: var(--border-color); }
+.theme-pink input, .theme-pink textarea, .theme-pink select { border-color: rgba(76, 17, 48, 0.2); }
+.theme-pink .bg-indigo-600 { background-color: #db2777 !important; } /* Hard Override to Pink Accent */
+.theme-pink .focus\:ring-indigo-500:focus { --tw-ring-color: #db2777 !important; }
+
+/* --- 4. CYBERPUNK 2077 MODE --- */
+.theme-cyber {
+    --bg-main: #000000;
+    --card-bg: #111111;
+    --text-color: #00ff66;
+    --border-color: #fcee0a;
+    background-color: var(--bg-main);
+    color: var(--text-color);
+    font-family: 'Courier New', Courier, monospace;
+}
+.theme-cyber .card, .theme-cyber nav { background-color: var(--card-bg); border: 2px solid var(--border-color); }
+.theme-cyber input, .theme-cyber textarea, .theme-cyber select { border: 1px solid #00ff66; color: #00ff66; background: #000; }
+.theme-cyber select option { background: #000; color: #00ff66; }
+.theme-cyber .bg-indigo-600 { background-color: #fcee0a !important; color: #000 !important; font-weight: bold; }
+
+/* --- 5. CUTE SCRAPBOOK --- */
+.theme-scrapbook {
+    --bg-main: #f4eae1;
+    --card-bg: #fcf8f2;
+    --text-color: #5c4033;
+    --border-color: rgba(92, 64, 51, 0.15);
+    background-color: var(--bg-main);
+    color: var(--text-color);
+}
+.theme-scrapbook .card, .theme-scrapbook nav { 
+    background-color: var(--card-bg); 
+    border-color: var(--border-color);
+    box-shadow: 4px 4px 0px rgba(92, 64, 51, 0.1);
+}
+.theme-scrapbook input, .theme-scrapbook textarea, .theme-scrapbook select { border-color: rgba(92, 64, 51, 0.3); }
+.theme-scrapbook .bg-indigo-600 { background-color: #8b5a2b !important; }
