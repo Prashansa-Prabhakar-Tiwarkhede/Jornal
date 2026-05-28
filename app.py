@@ -8,7 +8,14 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "diary-secret-key-change-in-prod")
+app.secret_key = os.environ.get("SECRET_KEY", "diary-dev-secret-key-please-change")
+
+# ── Cookie settings (critical for Render / HTTPS) ─────────────────────────────
+app.config["SESSION_COOKIE_HTTPONLY"]  = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# On Render (HTTPS) set Secure=True automatically
+if os.environ.get("RENDER"):
+    app.config["SESSION_COOKIE_SECURE"] = True
 
 # ── Database ──────────────────────────────────────────────────────────────────
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
@@ -51,6 +58,9 @@ class Entry(db.Model):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+def get_user(uid):
+    return db.session.get(User, uid)
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -85,7 +95,10 @@ def register_page():
 @app.route("/home")
 @login_required
 def home():
-    user = User.query.get(session["user_id"])
+    user = get_user(session["user_id"])
+    if not user:
+        session.clear()
+        return redirect(url_for("login_page"))
     return render_template("index.html", page="home", user=user)
 
 
@@ -98,7 +111,7 @@ def logout():
 # ── Auth API ──────────────────────────────────────────────────────────────────
 @app.route("/api/register", methods=["POST"])
 def api_register():
-    data  = request.get_json()
+    data  = request.get_json(force=True, silent=True) or {}
     name  = (data.get("name") or "").strip()
     email = (data.get("email") or "").strip().lower()
     pw    = data.get("password") or ""
@@ -114,6 +127,7 @@ def api_register():
     u.set_password(pw)
     db.session.add(u)
     db.session.commit()
+    session.permanent = True
     session["user_id"]   = u.id
     session["user_name"] = u.name
     return jsonify({"ok": True, "name": u.name})
@@ -121,7 +135,7 @@ def api_register():
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
-    data  = request.get_json()
+    data  = request.get_json(force=True, silent=True) or {}
     email = (data.get("email") or "").strip().lower()
     pw    = data.get("password") or ""
 
@@ -132,6 +146,7 @@ def api_login():
     if not u or not u.check_password(pw):
         return jsonify({"error": "Incorrect email or password"}), 401
 
+    session.permanent = True
     session["user_id"]   = u.id
     session["user_name"] = u.name
     return jsonify({"ok": True, "name": u.name})
@@ -141,8 +156,8 @@ def api_login():
 @app.route("/api/entries", methods=["GET"])
 @login_required
 def api_get_entries():
-    entries = Entry.query.filter_by(user_id=session["user_id"])\
-                         .order_by(Entry.entry_date.desc(), Entry.created_at.desc()).all()
+    rows = Entry.query.filter_by(user_id=session["user_id"])\
+                      .order_by(Entry.entry_date.desc(), Entry.created_at.desc()).all()
     return jsonify([{
         "id":         e.id,
         "title":      e.title,
@@ -151,13 +166,12 @@ def api_get_entries():
         "image_data": e.image_data,
         "entry_date": e.entry_date,
         "created_at": e.created_at.strftime("%Y-%m-%d %H:%M")
-    } for e in entries])
+    } for e in rows])
 
 
 @app.route("/api/entries", methods=["POST"])
 @login_required
 def api_add_entry():
-    # multipart form
     title      = (request.form.get("title") or "").strip()
     content    = (request.form.get("content") or "").strip()
     mood       = request.form.get("mood") or "😊"
@@ -183,9 +197,9 @@ def api_add_entry():
 @app.route("/api/entries/<int:eid>", methods=["DELETE"])
 @login_required
 def api_delete_entry(eid):
-    e = Entry.query.get_or_404(eid)
-    if e.user_id != session["user_id"]:
-        return jsonify({"error": "Forbidden"}), 403
+    e = db.session.get(Entry, eid)
+    if not e or e.user_id != session["user_id"]:
+        return jsonify({"error": "Not found"}), 404
     db.session.delete(e)
     db.session.commit()
     return jsonify({"ok": True})
@@ -194,9 +208,9 @@ def api_delete_entry(eid):
 @app.route("/api/entries/<int:eid>", methods=["PUT"])
 @login_required
 def api_edit_entry(eid):
-    e = Entry.query.get_or_404(eid)
-    if e.user_id != session["user_id"]:
-        return jsonify({"error": "Forbidden"}), 403
+    e = db.session.get(Entry, eid)
+    if not e or e.user_id != session["user_id"]:
+        return jsonify({"error": "Not found"}), 404
     title   = (request.form.get("title") or "").strip()
     content = (request.form.get("content") or "").strip()
     mood    = request.form.get("mood") or e.mood
@@ -207,8 +221,8 @@ def api_edit_entry(eid):
     e.mood    = mood
     img = request.files.get("image")
     if img and img.filename:
-        raw       = img.read()
-        mime      = img.content_type or "image/jpeg"
+        raw          = img.read()
+        mime         = img.content_type or "image/jpeg"
         e.image_data = f"data:{mime};base64," + base64.b64encode(raw).decode()
     db.session.commit()
     return jsonify({"ok": True})
@@ -217,9 +231,9 @@ def api_edit_entry(eid):
 @app.route("/api/calendar")
 @login_required
 def api_calendar():
-    entries = Entry.query.filter_by(user_id=session["user_id"]).all()
-    cal = {}
-    for e in entries:
+    rows = Entry.query.filter_by(user_id=session["user_id"]).all()
+    cal  = {}
+    for e in rows:
         cal[e.entry_date] = cal.get(e.entry_date, 0) + 1
     return jsonify(cal)
 
@@ -227,7 +241,9 @@ def api_calendar():
 @app.route("/api/me")
 @login_required
 def api_me():
-    u = User.query.get(session["user_id"])
+    u = get_user(session["user_id"])
+    if not u:
+        return jsonify({"error": "Not found"}), 404
     return jsonify({"name": u.name, "email": u.email})
 
 
