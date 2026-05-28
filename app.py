@@ -1,170 +1,240 @@
 import os
+import base64
 from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
+from functools import wraps
+
+from flask import Flask, render_template, request, redirect, url_for, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'super-secret-professional-key'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///shared_diary.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.secret_key = os.environ.get("SECRET_KEY", "diary-secret-key-change-in-prod")
+
+# ── Database ──────────────────────────────────────────────────────────────────
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DB_URL   = os.environ.get("DATABASE_URL", f"sqlite:///{os.path.join(BASE_DIR, 'diary.db')}")
+if DB_URL.startswith("postgres://"):
+    DB_URL = DB_URL.replace("postgres://", "postgresql://", 1)
+
+app.config["SQLALCHEMY_DATABASE_URI"]        = DB_URL
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["MAX_CONTENT_LENGTH"]             = 5 * 1024 * 1024
 
 db = SQLAlchemy(app)
 
-# --- DATABASE MODELS ---
-
-# Association table for shared diaries (Many-to-Many or Pair-to-One)
+# ── Models ────────────────────────────────────────────────────────────────────
 class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(150), nullable=False)
-    email = db.Column(db.String(150), unique=True, nullable=False)
-    password = db.Column(db.String(256), nullable=False)
-    diary_id = db.Column(db.Integer, db.ForeignKey('diary.id'), nullable=True)
+    __tablename__ = "users"
+    id            = db.Column(db.Integer, primary_key=True)
+    name          = db.Column(db.String(120), nullable=False)
+    email         = db.Column(db.String(200), unique=True, nullable=False)
+    password_hash = db.Column(db.String(256), nullable=False)
+    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
 
-class Diary(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    code = db.Column(db.String(50), unique=True, nullable=False) # Unique code to share
-    users = db.relationship('User', backref='diary', lazy=True)
-    entries = db.relationship('Entry', backref='diary', lazy=True)
+    def set_password(self, pw):
+        self.password_hash = generate_password_hash(pw)
+
+    def check_password(self, pw):
+        return check_password_hash(self.password_hash, pw)
+
 
 class Entry(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    title = db.Column(db.String(200), nullable=False)
-    content = db.Column(db.Text, nullable=False)
-    mood = db.Column(db.String(10), nullable=False)
-    date_str = db.Column(db.String(10), nullable=False) # Format: YYYY-MM-DD
+    __tablename__ = "entries"
+    id         = db.Column(db.Integer, primary_key=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    title      = db.Column(db.String(300), nullable=False)
+    content    = db.Column(db.Text, nullable=False)
+    mood       = db.Column(db.String(10), default="😊")
+    image_data = db.Column(db.Text, nullable=True)
+    entry_date = db.Column(db.String(10), nullable=False)   # YYYY-MM-DD
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    author_name = db.Column(db.String(150), nullable=False)
-    diary_id = db.Column(db.Integer, db.ForeignKey('diary.id'), nullable=False)
 
-# --- ROUTES ---
 
-@app.route('/')
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "user_id" not in session:
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ── Pages ─────────────────────────────────────────────────────────────────────
+@app.route("/")
 def index():
-    if 'user_id' in session:
-        return redirect(url_for('dashboard'))
-    return redirect(url_for('login'))
+    if "user_id" in session:
+        return redirect(url_for("home"))
+    return redirect(url_for("login_page"))
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        user = User.query.filter_by(email=email).first()
-        
-        if user and check_password_hash(user.password, password):
-            session['user_id'] = user.id
-            session['user_name'] = user.name
-            return redirect(url_for('dashboard'))
-        flash('Invalid email or password.', 'error')
-    return render_template('login.html')
 
-@app.route('/register', methods=['POST'])
-def register():
-    name = request.form.get('name')
-    email = request.form.get('email')
-    password = request.form.get('password')
-    
-    existing_user = User.query.filter_by(email=email).first()
-    if existing_user:
-        flash('Email already registered.', 'error')
-        return redirect(url_for('login'))
-        
-    hashed_password = generate_password_hash(password, method='scrypt')
-    new_user = User(name=name, email=email, password=hashed_password)
-    db.session.add(new_user)
-    db.session.commit()
-    
-    session['user_id'] = new_user.id
-    session['user_name'] = new_user.name
-    return redirect(url_for('dashboard'))
+@app.route("/login")
+def login_page():
+    if "user_id" in session:
+        return redirect(url_for("home"))
+    return render_template("index.html", page="login")
 
-@app.route('/dashboard')
-def dashboard():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    
-    user = db.session.get(User, session['user_id'])
-    if not user.diary_id:
-        return redirect(url_for('manage_diary'))
-        
-    return render_template('dashboard.html', user=user, diary_code=user.diary.code)
 
-@app.route('/manage-diary', methods=['GET', 'POST'])
-def manage_diary():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-        
-    user = db.session.get(User, session['user_id'])
-    
-    if request.method == 'POST':
-        action = request.form.get('action')
-        if action == 'create':
-            import uuid
-            unique_code = str(uuid.uuid4())[:8].upper()
-            new_diary = Diary(code=unique_code)
-            db.session.add(new_diary)
-            db.session.commit()
-            user.diary_id = new_diary.id
-            db.session.commit()
-            return redirect(url_for('dashboard'))
-            
-        elif action == 'join':
-            code = request.form.get('diary_code').strip().upper()
-            diary = Diary.query.filter_by(code=code).first()
-            if diary:
-                user.diary_id = diary.id
-                db.session.commit()
-                return redirect(url_for('dashboard'))
-            flash('Invalid Diary Code.', 'error')
-            
-    return render_template('invite.html', user=user)
+@app.route("/register")
+def register_page():
+    if "user_id" in session:
+        return redirect(url_for("home"))
+    return render_template("index.html", page="register")
 
-# --- API ENDPOINTS FOR CALENDAR & ENTRIES ---
 
-@app.route('/api/entries', methods=['GET'])
-def get_entries():
-    if 'user_id' not in session:
-        return jsonify({'error': 'Unauthorized'}), 401
-    user = db.session.get(User, session['user_id'])
-    if not user.diary_id:
-        return jsonify([])
-        
-    entries = Entry.query.filter_by(diary_id=user.diary_id).all()
-    return jsonify([{
-        'id': e.id,
-        'title': e.title,
-        'content': e.content,
-        'mood': e.mood,
-        'date_str': e.date_str,
-        'author': e.author_name
-    } for e in entries])
+@app.route("/home")
+@login_required
+def home():
+    user = User.query.get(session["user_id"])
+    return render_template("index.html", page="home", user=user)
 
-@app.route('/api/entries', methods=['POST'])
-def add_entry():
-    if 'user_id' not in session:
-        return jsonify({'error': 'Unauthorized'}), 401
-    user = db.session.get(User, session['user_id'])
-    
-    data = request.json
-    new_entry = Entry(
-        title=data.get('title'),
-        content=data.get('content'),
-        mood=data.get('mood'),
-        date_str=data.get('date_str'), # Expecting 'YYYY-MM-DD'
-        author_name=user.name,
-        diary_id=user.diary_id
-    )
-    db.session.add(new_entry)
-    db.session.commit()
-    return jsonify({'success': True})
 
-@app.route('/logout')
+@app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for('login'))
+    return redirect(url_for("login_page"))
 
-if __name__ == '__main__':
-    with app.app_context():
-        db.create_all() # Generates SQLite database file automatically
-    app.run(debug=True)
+
+# ── Auth API ──────────────────────────────────────────────────────────────────
+@app.route("/api/register", methods=["POST"])
+def api_register():
+    data  = request.get_json()
+    name  = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    pw    = data.get("password") or ""
+
+    if not name or not email or not pw:
+        return jsonify({"error": "All fields are required"}), 400
+    if len(pw) < 6:
+        return jsonify({"error": "Password must be at least 6 characters"}), 400
+    if User.query.filter_by(email=email).first():
+        return jsonify({"error": "Email already registered. Please sign in."}), 400
+
+    u = User(name=name, email=email)
+    u.set_password(pw)
+    db.session.add(u)
+    db.session.commit()
+    session["user_id"]   = u.id
+    session["user_name"] = u.name
+    return jsonify({"ok": True, "name": u.name})
+
+
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    data  = request.get_json()
+    email = (data.get("email") or "").strip().lower()
+    pw    = data.get("password") or ""
+
+    if not email or not pw:
+        return jsonify({"error": "Email and password are required"}), 400
+
+    u = User.query.filter_by(email=email).first()
+    if not u or not u.check_password(pw):
+        return jsonify({"error": "Incorrect email or password"}), 401
+
+    session["user_id"]   = u.id
+    session["user_name"] = u.name
+    return jsonify({"ok": True, "name": u.name})
+
+
+# ── Entries API ───────────────────────────────────────────────────────────────
+@app.route("/api/entries", methods=["GET"])
+@login_required
+def api_get_entries():
+    entries = Entry.query.filter_by(user_id=session["user_id"])\
+                         .order_by(Entry.entry_date.desc(), Entry.created_at.desc()).all()
+    return jsonify([{
+        "id":         e.id,
+        "title":      e.title,
+        "content":    e.content,
+        "mood":       e.mood,
+        "image_data": e.image_data,
+        "entry_date": e.entry_date,
+        "created_at": e.created_at.strftime("%Y-%m-%d %H:%M")
+    } for e in entries])
+
+
+@app.route("/api/entries", methods=["POST"])
+@login_required
+def api_add_entry():
+    # multipart form
+    title      = (request.form.get("title") or "").strip()
+    content    = (request.form.get("content") or "").strip()
+    mood       = request.form.get("mood") or "😊"
+    entry_date = request.form.get("entry_date") or datetime.utcnow().strftime("%Y-%m-%d")
+
+    if not title or not content:
+        return jsonify({"error": "Title and content are required"}), 400
+
+    image_data = None
+    img = request.files.get("image")
+    if img and img.filename:
+        raw        = img.read()
+        mime       = img.content_type or "image/jpeg"
+        image_data = f"data:{mime};base64," + base64.b64encode(raw).decode()
+
+    e = Entry(user_id=session["user_id"], title=title, content=content,
+              mood=mood, image_data=image_data, entry_date=entry_date)
+    db.session.add(e)
+    db.session.commit()
+    return jsonify({"ok": True, "id": e.id})
+
+
+@app.route("/api/entries/<int:eid>", methods=["DELETE"])
+@login_required
+def api_delete_entry(eid):
+    e = Entry.query.get_or_404(eid)
+    if e.user_id != session["user_id"]:
+        return jsonify({"error": "Forbidden"}), 403
+    db.session.delete(e)
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/entries/<int:eid>", methods=["PUT"])
+@login_required
+def api_edit_entry(eid):
+    e = Entry.query.get_or_404(eid)
+    if e.user_id != session["user_id"]:
+        return jsonify({"error": "Forbidden"}), 403
+    title   = (request.form.get("title") or "").strip()
+    content = (request.form.get("content") or "").strip()
+    mood    = request.form.get("mood") or e.mood
+    if not title or not content:
+        return jsonify({"error": "Title and content required"}), 400
+    e.title   = title
+    e.content = content
+    e.mood    = mood
+    img = request.files.get("image")
+    if img and img.filename:
+        raw       = img.read()
+        mime      = img.content_type or "image/jpeg"
+        e.image_data = f"data:{mime};base64," + base64.b64encode(raw).decode()
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/calendar")
+@login_required
+def api_calendar():
+    entries = Entry.query.filter_by(user_id=session["user_id"]).all()
+    cal = {}
+    for e in entries:
+        cal[e.entry_date] = cal.get(e.entry_date, 0) + 1
+    return jsonify(cal)
+
+
+@app.route("/api/me")
+@login_required
+def api_me():
+    u = User.query.get(session["user_id"])
+    return jsonify({"name": u.name, "email": u.email})
+
+
+# ── Boot ──────────────────────────────────────────────────────────────────────
+with app.app_context():
+    db.create_all()
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
